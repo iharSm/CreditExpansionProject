@@ -6,78 +6,113 @@ classdef BlackLitterman
         fileName = 'data/bank_equity_returns_3y.xlsx';
         mu_credit_exp;
         historical_returns;
-        %sigma
+        dates
     end
     
     methods
         function obj = BlackLitterman()
-            obj.mu_credit_exp = readtable(obj.fileName,'Sheet','mean', 'ReadRowNames',true);
-            %obj.sigma = xlsread(fileName, 'sd');
+            obj.dates = sort([datetime([1920:2013]', 1, 1);
+                datetime([1920:2013]', 4, 1);
+                datetime([1920:2013]', 7, 1);
+                datetime([1920:2012]', 10, 1)]);
+            [m,n] = size(obj.dates);
+            tr = timerange('01/01/1974','04/01/2013');
+            
+            obj.mu_credit_exp = readtable(obj.fileName,'Sheet','mean');
+            
+            obj.mu_credit_exp.Var1 = [];
+            obj.mu_credit_exp = table2timetable(obj.mu_credit_exp,'RowTimes',obj.dates);
+            
+            obj.mu_credit_exp = obj.mu_credit_exp(tr,:);
+            
+            
+            obj.historical_returns = readtable('data/histdata.xlsx', 'Sheet','equity_tot_excess_return');
+            obj.historical_returns.Var1 = [];
+            obj.historical_returns = table2timetable(obj.historical_returns,'RowTimes',obj.dates);
+            obj.historical_returns = obj.historical_returns(tr,:);
+            
+            obj.dates = sort([datetime([1974:2013]', 1, 1);
+                datetime([1974:2012]', 4, 1);
+                datetime([1974:2012]', 7, 1);
+                datetime([1974:2012]', 10, 1)]);
+            
+            
+            obj.mu_credit_exp = fillmissing(obj.mu_credit_exp, 'nearest');
+            obj.historical_returns = fillmissing(obj.historical_returns, 'nearest');
+        
         end
         
-        function view = portfolioViews(obj,date)
+        function [P, v]  = portfolioViews(obj,date)
             P = eye(20);
-            v = obj.mu_credit_exp(date,2:end);
-            view = [P, table2array(v)'];
+            v = table2array(obj.mu_credit_exp(date,1:end))';
         end
         
-        function muCov = portfolioMuCov(obj, date)
-            obj.historical_returns = readtable('data/histdata.xlsx', 'Sheet','equity_tot_excess_return', 'ReadRowNames',true);
+        function [mu, sigma] = portfolioMuCov(obj, date)
+            tr = timerange(obj.dates(1),date);
             
-            mu = mean(obj.historical_returns(1:date,2:end));
-            sigma = cov(obj.historical_returns(1:date,2:end));
-            
-            muCov=[mu,sigma];
+            mu = mean(table2array(obj.historical_returns(tr,1:end)))';
+            sigma = cov(table2array(obj.historical_returns(tr,1:end)));
         end
         
-        function [mu_bl, sigma_bl] = blackLittermanModel(obj, view, mu,sigma)
-            [m,n] = size(view);
+        function [mu_bl, sigma_bl] = blackLittermanModel(obj, P,v, mu,sigma)
+            [m,n] = size(P);
             w = ones(n,1)/n;
             tau = 1/m;
             pi = 2.4*sigma*w;
             
             %c=1 - no uncertaity in the views
             Omega = P*sigma*P';
-            v =1;
+
             mu_bl = pi + tau*sigma*P'*inv(tau*P*sigma*P' + Omega)*(v-P*pi);
-            
             sigma_bl = (1+tau)*sigma - tau^2 * sigma * P'*inv(tau*P*sigma*P' + Omega)*P*sigma;
             
         end
         
         function weights = markovitz(obj, mu, V)
+                   
             n = length(mu);
             e = ones(n,1);
             U = chol(V);
             
+            sigma = 0.2;
+            
             cvx_begin quiet
             
-            variables x0 x(n) y(n)
+            variables x(n)
             
-            maximize(x0*mu0 + mu'*x);
+            maximize(mu'*x);
             
             subject to
-            norm(U*x) <= sigma;
-            x0+sum(x) + total_trans_cost == 1;
-            x == xx +y;
-            x0>=0;
-            abs(x - 0.1)<=0.05;
+                norm(U*x) <= sigma;
+                sum(x) == 1;
+                abs(x)<=0.5;
             cvx_end
             
-            weights = [x0, x']
+            weights = [x]
         end
         
         function port_returns = simulate(obj)
             port_returns = [];
-            for i = 1980:2012
-                for j = 1:4
-                    date = strcat(int2str(i),'_',int2str(j));
-                    view = obj.portfolioViews(date);
-                    muCov = obj.portfolioMuCov(date);
-                    mu_bl, sigma_bl = obj.blackLittermanModel(view, muCov(1),muCov(2));
-                    weights = markovitz(mu_bl, sigma_bl);
-                    port_returns = [port_returns,weights']
-                end
+            old_date = obj.dates(40);
+            for date = obj.dates(41:end)'
+                [P, v ] = obj.portfolioViews(old_date);
+                [mu, sigma] = obj.portfolioMuCov(old_date);
+                [mu_bl, sigma_bl] = obj.blackLittermanModel(P,v, mu,sigma);
+                weights = obj.markovitz(mu_bl, sigma_bl);
+                port_returns = [port_returns;table2array(obj.historical_returns(date,:))*weights]
+                old_date = date;
+            end
+
+        end
+        
+        function port_returns = simulate_markovitz(obj)
+            port_returns = [];
+            old_date = obj.dates(40);
+            for date = obj.dates(41:end)'
+                [mu, sigma] = obj.portfolioMuCov(old_date);
+                weights = obj.markovitz(mu, sigma);
+                port_returns = [port_returns;table2array(obj.historical_returns(date,:))*weights]
+                old_date = date;
             end
         end
     end
